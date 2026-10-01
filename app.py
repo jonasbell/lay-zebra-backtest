@@ -5,11 +5,22 @@ import numpy as np
 st.set_page_config(page_title="Backtest Lay Zebra", page_icon="📊", layout="wide")
 
 st.title("📊 Dashboard de Backtest - Lay Zebra")
-st.markdown("Validação da estratégia em **partidas históricas reais** com gestão de banca, unidades e gráfico de evolução financeira.")
+st.markdown("Validação da estratégia calculando métricas e lucros **baseados na Responsabilidade Fixa (Risco Real)**.")
 
-# Sidebar - Parâmetros da Gestão de Banca & Unidade
-st.sidebar.header("💰 Gestão de Banca & Unidade")
-valor_unidade = st.sidebar.number_input("Valor por Unidade (R$ / €)", value=50.00, step=10.00, min_value=1.00)
+# Sidebar - Parâmetros da Gestão de Banca & Responsabilidade
+st.sidebar.header("💰 Gestão de Risco & Responsabilidade")
+tipo_gestao = st.sidebar.radio(
+    "Modelo de Entrada:",
+    ["Responsabilidade Fixa (Risco Fixo)", "Stake Fixa (Lucro Fixo)"]
+)
+
+valor_base = st.sidebar.number_input(
+    "Valor Base (R$ / €)", 
+    value=50.00, 
+    step=10.00, 
+    min_value=1.00,
+    help="Se Responsabilidade Fixa: MÁXIMO a perder por jogo. Se Stake Fixa: ganho fixo em caso de Green."
+)
 
 st.sidebar.header("🎯 Parâmetros da Estratégia")
 odd_min_zebra = st.sidebar.number_input("Odd Mínima Zebra (Visitante)", value=4.00, step=0.10)
@@ -45,8 +56,8 @@ def carregar_dados_historicos(liga_code, temp):
     except Exception:
         return pd.DataFrame()
 
-if st.button("🚀 Executar Backtest Histórico", type="primary"):
-    with st.spinner("Analisando histórico de partidas e gerando gráfico de saldo..."):
+if st.button("🚀 Executar Backtest Com Responsabilidade", type="primary"):
+    with st.spinner("Analisando histórico de partidas e calculando riscos..."):
         dados_totais = []
         
         for nome_liga in ligas_selecionadas:
@@ -89,21 +100,28 @@ if st.button("🚀 Executar Backtest Histórico", type="primary"):
                     
                 if (odd_min_zebra <= odd_z <= odd_max_zebra) and (taxa_m >= taxa_vitoria_min):
                     green = (resultado != 'A')
-                    lucro_unidades = 1.0 if green else -(odd_z - 1.0)
-                    lucro_financeiro = lucro_unidades * valor_unidade
+                    
+                    if tipo_gestao == "Responsabilidade Fixa (Risco Fixo)":
+                        # Risco é cravado no 'valor_base'. Lucro no green é proporcional à Odd
+                        responsabilidade = valor_base
+                        stake = valor_base / (odd_z - 1.0)
+                        lucro_fin = stake if green else -responsabilidade
+                    else:
+                        # Stake é cravada no 'valor_base'. Risco no red varia de acordo com a Odd
+                        stake = valor_base
+                        responsabilidade = valor_base * (odd_z - 1.0)
+                        lucro_fin = valor_base if green else -responsabilidade
                     
                     entradas_validadas.append({
                         "Data": row['Date'],
                         "Liga": row['Liga'],
                         "Mandante": m,
                         "Visitante": v,
-                        "Odd Mandante": odd_m,
                         "Odd Zebra": odd_z,
-                        "% Vitória Mandante": f"{taxa_m:.1f}%",
-                        "Placar": f"{int(golos_h)} x {int(golos_a)}",
                         "Resultado Lay": "✅ GREEN" if green else "❌ RED",
-                        "Lucro (u)": round(lucro_unidades, 2),
-                        "Lucro Fin (R$)": lucro_financeiro
+                        "Stake (R$)": round(stake, 2),
+                        "Risco / Resp. (R$)": round(responsabilidade, 2),
+                        "Lucro Fin (R$)": round(lucro_fin, 2)
                     })
                 
                 historico_mandantes[m]['jogos'] += 1
@@ -115,32 +133,29 @@ if st.button("🚀 Executar Backtest Histórico", type="primary"):
             else:
                 df_res = pd.DataFrame(entradas_validadas)
                 
-                # Cálculo do saldo acumulado jogo a jogo
+                # Cálculo da evolução do saldo
                 df_res["Entrada #"] = range(1, len(df_res) + 1)
                 df_res["Saldo Acumulado (R$)"] = df_res["Lucro Fin (R$)"].cumsum()
-                df_res["Saldo Acumulado (u)"] = df_res["Lucro (u)"].cumsum()
                 
                 total_jogos = len(df_res)
                 greens = len(df_res[df_res["Resultado Lay"] == "✅ GREEN"])
                 reds = total_jogos - greens
                 winrate = (greens / total_jogos) * 100
-                lucro_unidades_total = df_res["Lucro (u)"].sum()
                 lucro_financeiro_total = df_res["Lucro Fin (R$)"].sum()
                 
-                st.subheader("📈 Resumo do Desempenho Financeiro")
-                c1, c2, c3, c4, c5 = st.columns(5)
+                st.subheader("📈 Resumo da Estratégia")
+                c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Total de Entradas", total_jogos)
                 c2.metric("Greens / Reds", f"{greens} / {reds}")
                 c3.metric("Taxa de Acerto", f"{winrate:.1f}%")
-                c4.metric("Lucro Total (u)", f"{lucro_unidades_total:.2f} u")
-                c5.metric("Lucro em Dinheiro (R$)", f"R$ {lucro_financeiro_total:.2f}", delta=f"R$ {lucro_financeiro_total:.2f}")
+                c4.metric("Lucro Liquido (R$)", f"R$ {lucro_financeiro_total:.2f}", delta=f"R$ {lucro_financeiro_total:.2f}")
                 
-                # Gráfico da evolução da banca
-                st.subheader("📉 Curva de Evolução da Banca (Jogo a Jogo)")
+                # Gráfico
+                st.subheader("📉 Evolução da Banca (Saldo Acumulado em R$)")
                 st.line_chart(df_res, x="Entrada #", y="Saldo Acumulado (R$)", color="#00FF7F")
                 
-                # Exibição dos dados formatados
-                st.subheader("📋 Detalhamento de Partidas")
+                # Tabela detalhada com Risco
+                st.subheader("📋 Detalhamento com Responsabilidade e Stake")
                 df_exibicao = df_res.copy()
                 df_exibicao["Lucro / Prejuízo"] = df_exibicao["Lucro Fin (R$)"].apply(
                     lambda x: f"R$ {x:.2f}" if x >= 0 else f"-R$ {abs(x):.2f}"
@@ -151,7 +166,7 @@ if st.button("🚀 Executar Backtest Histórico", type="primary"):
                 
                 colunas_finais = [
                     "Entrada #", "Data", "Liga", "Mandante", "Visitante", 
-                    "Odd Zebra", "Resultado Lay", "Lucro (u)", "Lucro / Prejuízo", "Saldo Acumulado"
+                    "Odd Zebra", "Resultado Lay", "Stake (R$)", "Risco / Resp. (R$)", "Lucro / Prejuízo", "Saldo Acumulado"
                 ]
                 st.dataframe(df_exibicao[colunas_finais], use_container_width=True)
                 
