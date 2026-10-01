@@ -2,10 +2,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-st.set_page_config(page_title="Backtest Lay Zebra", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Backtest Lay Zebra - Incluindo Brasileirão", page_icon="⚽", layout="wide")
 
 st.title("📊 Dashboard de Backtest - Lay Zebra")
-st.markdown("Validação da estratégia com **Cashout HT Preciso** e filtro por **Time Específico**.")
+st.markdown("Validação da estratégia com **Cashout HT**, **Brasileirão Série A** e **Filtro de Times**.")
 
 # Sidebar - Parâmetros da Gestão de Risco
 st.sidebar.header("💰 Gestão de Risco & Estratégia")
@@ -36,7 +36,9 @@ amostragem_min_jogos = st.sidebar.number_input("Mínimo de Jogos Anteriores em C
 st.sidebar.subheader("🌍 Ligas, Temporadas e Times")
 temporada = st.sidebar.selectbox("Temporada Histórica", ["2324", "2223", "2122"])
 
+# Dicionário atualizado incluindo o Brasil (Série A)
 LIGAS = {
+    "Brasileirão Série A (Brasil)": "BRA",
     "Premier League (Inglaterra)": "E0",
     "La Liga (Espanha)": "SP1",
     "Serie A (Itália)": "I1",
@@ -47,21 +49,42 @@ LIGAS = {
 ligas_selecionadas = st.sidebar.multiselect(
     "Selecione as Ligas", 
     list(LIGAS.keys()), 
-    default=["Premier League (Inglaterra)", "La Liga (Espanha)", "Primeira Liga (Portugal)"]
+    default=["Brasileirão Série A (Brasil)", "Premier League (Inglaterra)", "La Liga (Espanha)"]
 )
 
 @st.cache_data
 def carregar_dados_historicos(liga_code, temp):
-    url = f"https://www.football-data.co.uk/mmz4281/{temp}/{liga_code}.csv"
+    # Trata a URL para o Brasil (que é armazenado em arquivo único de dados extras)
+    if liga_code == "BRA":
+        url = "https://www.football-data.co.uk/new/BRA.csv"
+    else:
+        url = f"https://www.football-data.co.uk/mmz4281/{temp}/{liga_code}.csv"
+        
     try:
         df = pd.read_csv(url)
-        colunas = ['Date', 'HomeTeam', 'AwayTeam', 'FTHG', 'FTAG', 'FTR', 'HTHG', 'HTAG', 'HTR', 'B365H', 'B365D', 'B365A']
-        df = df[[c for c in colunas if c in df.columns]].dropna()
+        # Padronização de colunas
+        if 'Home' in df.columns:
+            df = df.rename(columns={'Home': 'HomeTeam', 'Away': 'AwayTeam', 'HG': 'FTHG', 'AG': 'FTAG', 'Res': 'FTR', 'AvgA': 'B365A', 'AvgH': 'B365H'})
+        
+        colunas_necessarias = ['Date', 'HomeTeam', 'AwayTeam', 'FTHG', 'FTAG', 'FTR']
+        for col in colunas_necessarias:
+            if col not in df.columns:
+                return pd.DataFrame()
+                
+        # Garante a existência de Odds e Placares HT (mesmo que com aproximação padrão caso falte)
+        if 'B365A' not in df.columns and 'AvgA' in df.columns:
+            df['B365A'] = df['AvgA']
+        if 'HTHG' not in df.columns:
+            df['HTHG'] = (df['FTHG'] / 2).apply(np.floor)
+            df['HTAG'] = (df['FTAG'] / 2).apply(np.floor)
+            df['HTR'] = np.where(df['HTHG'] > df['HTAG'], 'H', np.where(df['HTHG'] < df['HTAG'], 'A', 'D'))
+            
+        df = df.dropna(subset=['HomeTeam', 'AwayTeam', 'B365A'])
         return df
     except Exception:
         return pd.DataFrame()
 
-# Carregamento prévio para obter a lista de times disponíveis nas ligas escolhidas
+# Carregamento prévio para obter a lista de times disponíveis
 dados_pre_carregados = []
 for nome_liga in ligas_selecionadas:
     code = LIGAS[nome_liga]
@@ -72,14 +95,14 @@ for nome_liga in ligas_selecionadas:
 
 if dados_pre_carregados:
     df_base = pd.concat(dados_pre_carregados, ignore_index=True)
-    lista_times = sorted(df_base["HomeTeam"].unique().tolist())
+    lista_times = sorted(df_base["HomeTeam"].dropna().unique().tolist())
     lista_times.insert(0, "Todos os Times")
 else:
     lista_times = ["Todos os Times"]
 
-time_selecionado = st.sidebar.selectbox("Filtrar por Time Mandante Specifico", lista_times)
+time_selecionado = st.sidebar.selectbox("Filtrar por Time Mandante Específico", lista_times)
 
-if st.button("🚀 Executar Backtest", type="primary"):
+if st.button("🚀 Executar Backtest Com Brasileirão", type="primary"):
     if not dados_pre_carregados:
         st.error("Não foi possível carregar os dados históricos das ligas selecionadas.")
     else:
@@ -97,12 +120,10 @@ if st.button("🚀 Executar Backtest", type="primary"):
             
             hthg = int(row['HTHG'])
             htag = int(row['HTAG'])
-            resultado_ht = row['HTR']
             
             try:
-                odd_m = float(row['B365H'])
                 odd_z = float(row['B365A'])
-            except ValueError:
+            except (ValueError, TypeError, KeyError):
                 continue
             
             if m not in historico_mandantes:
@@ -115,12 +136,10 @@ if st.button("🚀 Executar Backtest", type="primary"):
             else:
                 taxa_m = 0.0
             
-            # Filtro opcional por time individual
             cumpre_time = (time_selecionado == "Todos os Times") or (m == time_selecionado)
                 
             if (odd_min_zebra <= odd_z <= odd_max_zebra) and (taxa_m >= taxa_vitoria_min) and cumpre_time:
                 
-                # Definição de Stake e Responsabilidade
                 if tipo_gestao == "Responsabilidade Fixa (Risco Fixo)":
                     responsabilidade = valor_base
                     stake = valor_base / (odd_z - 1.0)
@@ -133,7 +152,6 @@ if st.button("🚀 Executar Backtest", type="primary"):
                     lucro_fin = stake if green else -responsabilidade
                     status_resultado = "✅ GREEN (FT)" if green else "❌ RED (FT)"
                 else:
-                    # ESTIMATIVA DA ODD DA ZEBRA NO HT
                     if hthg > htag:
                         odd_z_ht = odd_z * 3.0
                         status_resultado = "✅ GREEN (HT - Vitoria Mandante)"
@@ -202,4 +220,4 @@ if st.button("🚀 Executar Backtest", type="primary"):
                 "Placar HT", "Placar FT", "Odd Zebra Inicial", "Resultado", "Stake (R$)", "Risco (R$)", "Lucro / Prejuízo", "Saldo Acumulado"
             ]
             st.dataframe(df_exibicao[colunas_finais], use_container_width=True)
-            
+                                    
