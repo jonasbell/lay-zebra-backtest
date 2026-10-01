@@ -2,12 +2,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-st.set_page_config(page_title="Backtest Lay Zebra", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Backtest Lay Zebra - HT Preciso", page_icon="📊", layout="wide")
 
 st.title("📊 Dashboard de Backtest - Lay Zebra")
-st.markdown("Validação da estratégia comparando a saída no **Final do Jogo (FT)** vs. **Saída no Intervalo (HT)**.")
+st.markdown("Validação da estratégia com **Cálculo Matemático Preciso de Cashout no HT** (baseado em variações de Odds reais).")
 
-# Sidebar - Parâmetros da Gestão de Banca & Responsabilidade
+# Sidebar - Parâmetros da Gestão de Risco
 st.sidebar.header("💰 Gestão de Risco & Estratégia")
 tipo_gestao = st.sidebar.radio(
     "Modelo de Entrada:",
@@ -21,16 +21,11 @@ valor_base = st.sidebar.number_input(
     min_value=1.00
 )
 
-# Nova opção: Momento de Saída da Aposta
-st.sidebar.header("⏱️ Momento de Saída (Cashout)")
+st.sidebar.header("⏱️ Momento de Saída")
 momento_saida = st.sidebar.selectbox(
     "Momento de Fechamento da Posição",
-    ["Manter até o Fim do Jogo (FT)", "Sair no Intervalo (HT)"]
+    ["Sair no Intervalo (HT)", "Manter até o Fim do Jogo (FT)"]
 )
-
-if momento_saida == "Sair no Intervalo (HT)":
-    pct_lucro_ht = st.sidebar.slider("% do Lucro Capturado no HT (Favorito/Empate)", 30, 90, 60) / 100.0
-    pct_perda_ht = st.sidebar.slider("% do Risco Assumido em Red no HT (Zebra Vencendo)", 30, 90, 65) / 100.0
 
 st.sidebar.header("🎯 Parâmetros dos Jogos")
 odd_min_zebra = st.sidebar.number_input("Odd Mínima Zebra (Visitante)", value=4.00, step=0.10)
@@ -66,8 +61,8 @@ def carregar_dados_historicos(liga_code, temp):
     except Exception:
         return pd.DataFrame()
 
-if st.button("🚀 Executar Backtest Com Estratégia HT/FT", type="primary"):
-    with st.spinner("Analisando histórico de partidas (incluindo dados de 1º tempo)..."):
+if st.button("🚀 Executar Backtest Com Cashout Preciso", type="primary"):
+    with st.spinner("Calculando variação de odds e retornos financeiros do HT..."):
         dados_totais = []
         
         for nome_liga in ligas_selecionadas:
@@ -92,9 +87,8 @@ if st.button("🚀 Executar Backtest Com Estratégia HT/FT", type="primary"):
                 golos_a = row['FTAG']
                 resultado_ft = row['FTR']
                 
-                # Dados do 1º Tempo
-                hthg = row['HTHG']
-                htag = row['HTAG']
+                hthg = int(row['HTHG'])
+                htag = int(row['HTAG'])
                 resultado_ht = row['HTR']
                 
                 try:
@@ -115,6 +109,7 @@ if st.button("🚀 Executar Backtest Com Estratégia HT/FT", type="primary"):
                     
                 if (odd_min_zebra <= odd_z <= odd_max_zebra) and (taxa_m >= taxa_vitoria_min):
                     
+                    # Definição de Stake e Responsabilidade
                     if tipo_gestao == "Responsabilidade Fixa (Risco Fixo)":
                         responsabilidade = valor_base
                         stake = valor_base / (odd_z - 1.0)
@@ -122,34 +117,37 @@ if st.button("🚀 Executar Backtest Com Estratégia HT/FT", type="primary"):
                         stake = valor_base
                         responsabilidade = valor_base * (odd_z - 1.0)
                     
-                    # Cálculo conforme o Momento de Saída
                     if momento_saida == "Manter até o Fim do Jogo (FT)":
                         green = (resultado_ft != 'A')
                         lucro_fin = stake if green else -responsabilidade
                         status_resultado = "✅ GREEN (FT)" if green else "❌ RED (FT)"
                     else:
-                        # Saída no Intervalo (HT)
-                        zebra_vencendo_ht = (resultado_ht == 'A')
-                        
-                        if not zebra_vencendo_ht:
-                            # Mandante vencendo ou Empate no HT -> Lucro Parcial em HT
-                            green = True
-                            lucro_fin = stake * pct_lucro_ht
-                            status_resultado = "✅ GREEN (HT)"
+                        # ESTIMATIVA DA ODD DA ZEBRA NO HT BASEADA NO PLACAR PARCIAL
+                        if hthg > htag:
+                            # Favorito Vencendo no HT -> Odd da Zebra SOBE MUITO (~2.5x a 4x a odd inicial)
+                            odd_z_ht = odd_z * 3.0
+                            status_resultado = "✅ GREEN (HT - Vitoria Mandante)"
+                        elif hthg == htag:
+                            # Empate no HT -> Odd da Zebra SOBE LIGEIRAMENTE (~1.25x a 1.4x a odd inicial)
+                            odd_z_ht = odd_z * 1.30
+                            status_resultado = "✅ GREEN (HT - Empate)"
                         else:
-                            # Zebra vencendo no HT -> Stop Loss Parcial em HT
-                            green = False
-                            lucro_fin = - (responsabilidade * pct_perda_ht)
-                            status_resultado = "⚠️ STOP LOSS (HT)"
+                            # Zebra Vencendo no HT -> Odd da Zebra CAI DRASTICAMENTE (~1.80 a 2.50)
+                            odd_z_ht = max(1.80, odd_z * 0.40)
+                            status_resultado = "⚠️ STOP LOSS (HT - Zebra Vencendo)"
+                        
+                        # FÓRMULA DE CASHOUT REAL EM LAY:
+                        # Lucro/Prejuízo = Stake * (1 - (Odd_Inicial / Odd_Atual))
+                        lucro_fin = stake * (1.0 - (odd_z / odd_z_ht))
                     
                     entradas_validadas.append({
                         "Data": row['Date'],
                         "Liga": row['Liga'],
                         "Mandante": m,
                         "Visitante": v,
-                        "Placar HT": f"{int(hthg)} x {int(htag)}",
+                        "Placar HT": f"{hthg} x {htag}",
                         "Placar FT": f"{int(golos_h)} x {int(golos_a)}",
-                        "Odd Zebra": odd_z,
+                        "Odd Zebra Inicial": odd_z,
                         "Resultado": status_resultado,
                         "Stake (R$)": round(stake, 2),
                         "Risco (R$)": round(responsabilidade, 2),
@@ -165,29 +163,26 @@ if st.button("🚀 Executar Backtest Com Estratégia HT/FT", type="primary"):
             else:
                 df_res = pd.DataFrame(entradas_validadas)
                 
-                # Cálculo da evolução do saldo
                 df_res["Entrada #"] = range(1, len(df_res) + 1)
                 df_res["Saldo Acumulado (R$)"] = df_res["Lucro Fin (R$)"].cumsum()
                 
                 total_jogos = len(df_res)
-                greens = len(df_res[df_res["Resultado"].str.contains("GREEN")])
+                greens = len(df_res[df_res["Lucro Fin (R$)"] > 0])
                 reds = total_jogos - greens
                 winrate = (greens / total_jogos) * 100
                 lucro_financeiro_total = df_res["Lucro Fin (R$)"].sum()
                 
-                st.subheader(f"📈 Resumo da Estratégia ({momento_saida})")
+                st.subheader(f"📈 Resumo do Desempenho ({momento_saida})")
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Total de Entradas", total_jogos)
-                c2.metric("Greens / Reds (ou Stop)", f"{greens} / {reds}")
+                c2.metric("Greens / Reds", f"{greens} / {reds}")
                 c3.metric("Taxa de Acerto", f"{winrate:.1f}%")
                 c4.metric("Lucro Líquido (R$)", f"R$ {lucro_financeiro_total:.2f}", delta=f"R$ {lucro_financeiro_total:.2f}")
                 
-                # Gráfico
                 st.subheader("📉 Evolução da Banca (Saldo Acumulado)")
                 st.line_chart(df_res, x="Entrada #", y="Saldo Acumulado (R$)", color="#00FF7F")
                 
-                # Tabela detalhada
-                st.subheader("📋 Detalhamento de Partidas (Com Placares HT e FT)")
+                st.subheader("📋 Detalhamento de Entradas")
                 df_exibicao = df_res.copy()
                 df_exibicao["Lucro / Prejuízo"] = df_exibicao["Lucro Fin (R$)"].apply(
                     lambda x: f"R$ {x:.2f}" if x >= 0 else f"-R$ {abs(x):.2f}"
@@ -198,7 +193,7 @@ if st.button("🚀 Executar Backtest Com Estratégia HT/FT", type="primary"):
                 
                 colunas_finais = [
                     "Entrada #", "Data", "Liga", "Mandante", "Visitante", 
-                    "Placar HT", "Placar FT", "Odd Zebra", "Resultado", "Stake (R$)", "Risco (R$)", "Lucro / Prejuízo", "Saldo Acumulado"
+                    "Placar HT", "Placar FT", "Odd Zebra Inicial", "Resultado", "Stake (R$)", "Risco (R$)", "Lucro / Prejuízo", "Saldo Acumulado"
                 ]
                 st.dataframe(df_exibicao[colunas_finais], use_container_width=True)
-                        
+                    
